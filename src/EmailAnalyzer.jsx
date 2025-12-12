@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import { Upload, TrendingUp, Mail, Target, BarChart3, FileText, Download } from 'lucide-react';
+import { Upload, TrendingUp, Mail, Target, BarChart3, FileText, Download, Info } from 'lucide-react';
 import { BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
 
 const EmailAnalyzer = () => {
@@ -9,96 +9,224 @@ const EmailAnalyzer = () => {
 
   const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#14b8a6', '#f97316'];
 
-  // Template patterns
-  const RESEARCH_PATTERN = {
-    name: 'Research-Based Outreach',
-    indicators: [
-      /noticed|saw|came across|found|read about/i,
-      /wondering|curious|interested to know/i,
-      /was able to|achieved|accomplished|saw results/i,
-      /would you|are you|have you considered/i
-    ],
-    structure: ['greeting', 'observation', 'question', 'social_proof', 'cta']
+  // Template patterns with descriptions
+  const TEMPLATES = {
+    RESEARCH_BASED: {
+      name: 'Research-Based Outreach',
+      description: 'Personalized emails that reference specific research about the prospect or their organization, followed by a relevant pain point question and social proof',
+      indicators: [
+        { pattern: /noticed|saw that|came across|read about|read that|saw your|found that/i, weight: 2 },
+        { pattern: /wondering if|curious if|curious about|interested to know/i, weight: 2 },
+        { pattern: /was able to|were able to|achieved|accomplished|saw a|helped.*achieve/i, weight: 2 },
+        { pattern: /(challenges?|issues?|pain points?|concerns?).*(facing|experiencing|dealing with)/i, weight: 1 }
+      ],
+      minScore: 4
+    },
+    PROBLEM_SOLUTION: {
+      name: 'Problem + Solution',
+      description: 'Direct approach identifying a common problem followed by proposed solution, often without personalization',
+      indicators: [
+        { pattern: /struggling with|challenges with|difficulty|problem with|issue with/i, weight: 2 },
+        { pattern: /solution|solve|address|help with|can help/i, weight: 2 },
+        { pattern: /we (offer|provide|have|specialize)/i, weight: 1 }
+      ],
+      minScore: 3
+    },
+    MEETING_REQUEST: {
+      name: 'Direct Meeting Request',
+      description: 'Straightforward ask for a meeting or call, often with minimal context',
+      indicators: [
+        { pattern: /schedule|calendar|meeting|call|connect|time to (chat|talk|discuss)/i, weight: 2 },
+        { pattern: /available|free|open|have (time|15 minutes)/i, weight: 1 },
+        { pattern: /would you (be|have)|are you (available|free)/i, weight: 1 }
+      ],
+      minScore: 3
+    },
+    FOLLOW_UP: {
+      name: 'Follow-Up',
+      description: 'Checking in on previous communication or continuing an existing conversation',
+      indicators: [
+        { pattern: /following up|follow up|checking in|touching base|circling back/i, weight: 3 },
+        { pattern: /previous|earlier|last (week|email|conversation)|haven't heard/i, weight: 2 }
+      ],
+      minScore: 3
+    },
+    VALUE_PROP: {
+      name: 'Value Proposition',
+      description: 'Leading with company benefits, ROI, or results without specific personalization',
+      indicators: [
+        { pattern: /we help|we work with|we've helped|we partner/i, weight: 2 },
+        { pattern: /increase|reduce|improve|save|grow/i, weight: 1 },
+        { pattern: /\d+%|\d+x/i, weight: 1 }
+      ],
+      minScore: 3
+    },
+    EVENT_BASED: {
+      name: 'Event-Based Outreach',
+      description: 'Leveraging a conference, event, or specific timing for outreach',
+      indicators: [
+        { pattern: /conference|summit|meeting|event|attending/i, weight: 2 },
+        { pattern: /while you're|will be|in (new york|boston|chicago|san francisco|new orleans)/i, weight: 2 },
+        { pattern: /next week|coming up|around the corner/i, weight: 1 }
+      ],
+      minScore: 3
+    },
+    SOCIAL_PROOF: {
+      name: 'Social Proof Heavy',
+      description: 'Multiple references to other clients, case studies, or results to build credibility',
+      indicators: [
+        { pattern: /(university|college|school|hospital|health system).*(achieved|saw|increased)/i, weight: 2 },
+        { pattern: /similar to yours|others like you|clients like/i, weight: 2 },
+        { pattern: /case study|success story/i, weight: 2 }
+      ],
+      minScore: 3
+    },
+    QUESTION_OPENER: {
+      name: 'Question Opener',
+      description: 'Opens with a direct question to engage prospect',
+      indicators: [
+        { pattern: /^(hi|hello|hey).*\?\s/i, weight: 2 },
+        { pattern: /^(are you|do you|have you|would you|can you)\b/i, weight: 2 }
+      ],
+      minScore: 2
+    }
   };
 
-  // Parse CSV file
+  // Parse CSV file with better handling and empty row filtering
   const parseCSV = (text) => {
-    const lines = text.split('\n').filter(line => line.trim());
+    const lines = text.split('\n');
     if (lines.length < 2) return [];
     
-    const headers = lines[0].split(',').map(h => h.trim().replace(/^"|"$/g, ''));
-    const rows = lines.slice(1).map(line => {
+    const headers = lines[0].split(',').map(h => h.trim().replace(/^"|"$/g, '').toLowerCase());
+    const rows = [];
+    
+    let i = 1;
+    while (i < lines.length) {
       const values = [];
       let current = '';
       let inQuotes = false;
+      let line = lines[i];
       
-      for (let char of line) {
-        if (char === '"') {
-          inQuotes = !inQuotes;
-        } else if (char === ',' && !inQuotes) {
-          values.push(current.trim().replace(/^"|"$/g, ''));
-          current = '';
+      // Handle multi-line fields
+      while (i < lines.length) {
+        for (let j = 0; j < line.length; j++) {
+          const char = line[j];
+          
+          if (char === '"') {
+            inQuotes = !inQuotes;
+          } else if (char === ',' && !inQuotes) {
+            values.push(current.trim().replace(/^"|"$/g, ''));
+            current = '';
+          } else {
+            current += char;
+          }
+        }
+        
+        if (inQuotes && i + 1 < lines.length) {
+          current += '\n';
+          i++;
+          line = lines[i];
         } else {
-          current += char;
+          break;
         }
       }
+      
       values.push(current.trim().replace(/^"|"$/g, ''));
       
+      // Create row object
       const row = {};
-      headers.forEach((header, i) => {
-        row[header] = values[i] || '';
+      headers.forEach((header, idx) => {
+        row[header] = values[idx] || '';
       });
-      return row;
-    });
+      
+      // Only add rows that have meaningful content
+      // Must have at least a body OR a subject OR a recipient
+      const hasBody = row.body && row.body.trim().length > 0;
+      const hasSubject = row.subject && row.subject.trim().length > 0;
+      const hasRecipient = row.recipient && row.recipient.trim().length > 0;
+      
+      if (hasBody || hasSubject || hasRecipient) {
+        // Additional validation: body should be at least 10 characters if it exists
+        if (!hasBody || row.body.trim().length >= 10) {
+          rows.push(row);
+        }
+      }
+      
+      i++;
+    }
     
     return rows;
   };
 
-  // Analyze email template
+  // Analyze email template with weighted scoring
   const analyzeTemplate = (emailBody) => {
-    if (!emailBody) return { type: 'Unknown', score: 0 };
+    if (!emailBody || emailBody.trim().length === 0) {
+      return { type: 'Empty/No Body', score: 0, description: 'Email has no body content' };
+    }
     
     const body = emailBody.toLowerCase();
-    const lines = emailBody.split('\n').filter(l => l.trim());
+    const cleanBody = body.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
     
-    // Check for research-based pattern
-    const researchMatches = RESEARCH_PATTERN.indicators.filter(pattern => 
-      pattern.test(body)
-    ).length;
+    // Remove signatures and footers for better analysis
+    const bodyWithoutSig = cleanBody.split(/--|sincerely|best regards|regards|thanks|thank you|cheers/i)[0];
     
-    if (researchMatches >= 3) {
-      return { type: 'Research-Based Outreach', score: researchMatches };
+    let bestMatch = null;
+    let highestScore = 0;
+    
+    // Score each template
+    for (const [key, template] of Object.entries(TEMPLATES)) {
+      let score = 0;
+      
+      for (const indicator of template.indicators) {
+        if (indicator.pattern.test(bodyWithoutSig)) {
+          score += indicator.weight;
+        }
+      }
+      
+      if (score >= template.minScore && score > highestScore) {
+        highestScore = score;
+        bestMatch = {
+          type: template.name,
+          score: score,
+          description: template.description
+        };
+      }
     }
     
-    // Check for other common patterns
-    if (body.includes('quick question') || body.includes('reaching out')) {
-      return { type: 'Direct Question', score: 1 };
+    // Fallback categorization based on length and structure
+    if (!bestMatch) {
+      const lines = bodyWithoutSig.split('\n').filter(l => l.trim());
+      const wordCount = bodyWithoutSig.split(/\s+/).length;
+      
+      if (wordCount < 30) {
+        return {
+          type: 'Short & Direct',
+          score: 1,
+          description: 'Brief, concise message under 30 words'
+        };
+      } else if (wordCount > 150) {
+        return {
+          type: 'Long-Form Narrative',
+          score: 1,
+          description: 'Detailed, comprehensive message over 150 words'
+        };
+      } else {
+        return {
+          type: 'Standard Outreach',
+          score: 0,
+          description: 'General outreach email without distinct pattern'
+        };
+      }
     }
     
-    if (body.includes('partnership') || body.includes('collaborate')) {
-      return { type: 'Partnership Pitch', score: 1 };
-    }
-    
-    if (body.includes('free') || body.includes('demo') || body.includes('trial')) {
-      return { type: 'Product Demo Offer', score: 1 };
-    }
-    
-    if (lines.length <= 5) {
-      return { type: 'Short & Direct', score: 1 };
-    }
-    
-    if (lines.length >= 15) {
-      return { type: 'Long-Form Narrative', score: 1 };
-    }
-    
-    return { type: 'Standard Outreach', score: 0 };
+    return bestMatch;
   };
 
-  // Calculate email metrics
+  // Calculate email metrics with flexible column naming
   const calculateMetrics = (email) => {
-    const opens = parseInt(email.opens || email.Opens || email.opened || 0);
-    const clicks = parseInt(email.clicks || email.Clicks || email.clicked || 0);
-    const replies = parseInt(email.replies || email.Replies || email.replied || 0);
+    const opens = parseInt(email.opens || email.Opens || email.opened || email.Opened || 0);
+    const clicks = parseInt(email.clicks || email.Clicks || email.clicked || email.Clicked || 0);
+    const replies = parseInt(email.replies || email.Replies || email.replied || email.Replied || 0);
     
     return {
       opened: opens > 0,
@@ -134,8 +262,8 @@ const EmailAnalyzer = () => {
     };
 
     emails.forEach(email => {
-      const bodyField = email.body || email.Body || email['Email Body'] || email.content || '';
-      const subjectField = email.subject || email.Subject || email['Subject Line'] || '';
+      const bodyField = email.body || email.Body || email['Email Body'] || email.content || email.message || '';
+      const subjectField = email.subject || email.Subject || email['Subject Line'] || email.subject_line || '';
       
       const template = analyzeTemplate(bodyField);
       const metrics = calculateMetrics(email);
@@ -145,6 +273,7 @@ const EmailAnalyzer = () => {
       if (!templateGroups[template.type]) {
         templateGroups[template.type] = {
           name: template.type,
+          description: template.description || 'Email template pattern',
           count: 0,
           opens: 0,
           clicks: 0,
@@ -175,8 +304,8 @@ const EmailAnalyzer = () => {
         subject: subjectField,
         body: bodyField,
         metrics,
-        sentDate: email.date || email.Date || email['Sent Date'] || '',
-        recipient: email.to || email.To || email.recipient || ''
+        sentDate: email.date || email.Date || email['Sent Date'] || email.sent_date || '',
+        recipient: email.to || email.To || email.recipient || email.Recipient || email.email || ''
       });
       
       // Subject analysis
@@ -234,6 +363,12 @@ const EmailAnalyzer = () => {
       try {
         const text = e.target.result;
         const parsed = parseCSV(text);
+        
+        console.log('📊 CSV Parse Results:');
+        console.log(`   Total lines in file: ${text.split('\n').length}`);
+        console.log(`   Valid emails parsed: ${parsed.length}`);
+        console.log(`   Empty rows skipped: ${text.split('\n').length - parsed.length - 1}`);
+        
         setData(parsed);
         
         const results = analyzeEmails(parsed);
@@ -332,6 +467,7 @@ const EmailAnalyzer = () => {
                 <div className="mt-6 text-center">
                   <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-blue-400"></div>
                   <p className="text-blue-200 mt-2">Processing emails...</p>
+                  <p className="text-blue-300 text-sm mt-1">Filtering empty rows and parsing templates</p>
                 </div>
               )}
             </div>
@@ -369,6 +505,7 @@ const EmailAnalyzer = () => {
                   <h3 className="text-white/70 text-sm font-medium">Total Emails</h3>
                 </div>
                 <p className="text-3xl font-bold text-white">{analysis.overall.totalEmails}</p>
+                <p className="text-xs text-green-400 mt-1">✓ Empty rows filtered</p>
               </div>
               
               <div className="bg-white/10 backdrop-blur-lg rounded-xl p-6 border border-white/20">
@@ -532,13 +669,17 @@ const EmailAnalyzer = () => {
                     <div className="flex justify-between items-start mb-4">
                       <div>
                         <h3 className="text-xl font-bold text-white mb-2">{group.name}</h3>
+                        <p className="text-white/70 text-sm mb-2 italic flex items-start gap-2">
+                          <Info className="w-4 h-4 mt-0.5 flex-shrink-0" />
+                          <span>{group.description}</span>
+                        </p>
                         <p className="text-white/60">
                           {group.count} emails • Avg length: {group.avgLength} characters
                         </p>
                       </div>
                       {group.name === 'Research-Based Outreach' && (
                         <span className="px-3 py-1 bg-green-500/20 text-green-300 rounded-full text-sm font-medium">
-                          New Style
+                          🎯 Your New Style
                         </span>
                       )}
                     </div>
