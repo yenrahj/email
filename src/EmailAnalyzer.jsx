@@ -404,6 +404,54 @@ const EmailAnalyzer = () => {
     a.click();
   };
 
+  const exportTemplateCSV = (templateGroup) => {
+    if (!templateGroup || !templateGroup.emails) return;
+    
+    // Create CSV headers
+    const headers = ['Subject', 'Body', 'Recipient', 'Sent Date', 'Opened', 'Clicked', 'Replied', 'Opens Count', 'Clicks Count', 'Replies Count'];
+    
+    // Create CSV rows
+    const rows = templateGroup.emails.map(email => {
+      return [
+        email.subject || '',
+        email.body || '',
+        email.recipient || '',
+        email.sentDate || '',
+        email.metrics.opened ? 'Yes' : 'No',
+        email.metrics.clicked ? 'Yes' : 'No',
+        email.metrics.replied ? 'Yes' : 'No',
+        email.metrics.opens || 0,
+        email.metrics.clicks || 0,
+        email.metrics.replies || 0
+      ];
+    });
+    
+    // Escape CSV fields (wrap in quotes and escape existing quotes)
+    const escapeCSV = (field) => {
+      const str = String(field);
+      if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+        return `"${str.replace(/"/g, '""')}"`;
+      }
+      return str;
+    };
+    
+    // Build CSV content
+    const csvContent = [
+      headers.map(escapeCSV).join(','),
+      ...rows.map(row => row.map(escapeCSV).join(','))
+    ].join('\n');
+    
+    // Download
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    const templateName = templateGroup.name.replace(/[^a-z0-9]/gi, '_').toLowerCase();
+    a.download = `${templateName}_emails_${Date.now()}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   const performanceData = useMemo(() => {
     if (!analysis) return [];
     return analysis.templateGroups.map(group => ({
@@ -663,8 +711,15 @@ const EmailAnalyzer = () => {
                 {analysis.templateGroups.map((group, idx) => (
                   <div key={idx} className="bg-white/5 rounded-lg p-6 border border-white/10">
                     <div className="flex justify-between items-start mb-4">
-                      <div>
-                        <h3 className="text-xl font-bold text-white mb-2">{group.name}</h3>
+                      <div className="flex-1">
+                        <div className="flex items-center gap-3 mb-2">
+                          <h3 className="text-xl font-bold text-white">{group.name}</h3>
+                          {group.name === 'Research-Based Outreach' && (
+                            <span className="px-3 py-1 bg-green-500/20 text-green-300 rounded-full text-sm font-medium">
+                              🎯 Your New Style
+                            </span>
+                          )}
+                        </div>
                         <p className="text-white/70 text-sm mb-2 italic flex items-start gap-2">
                           <Info className="w-4 h-4 mt-0.5 flex-shrink-0" />
                           <span>{group.description}</span>
@@ -673,11 +728,14 @@ const EmailAnalyzer = () => {
                           {group.count} emails • Avg length: {group.avgLength} characters
                         </p>
                       </div>
-                      {group.name === 'Research-Based Outreach' && (
-                        <span className="px-3 py-1 bg-green-500/20 text-green-300 rounded-full text-sm font-medium">
-                          🎯 Your New Style
-                        </span>
-                      )}
+                      <button
+                        onClick={() => exportTemplateCSV(group)}
+                        className="ml-4 flex items-center gap-2 px-4 py-2 bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 rounded-lg transition-all border border-blue-500/30 hover:scale-105"
+                        title={`Download CSV of all ${group.count} ${group.name} emails`}
+                      >
+                        <Download className="w-4 h-4" />
+                        <span className="text-sm font-medium">Export {group.count} Emails</span>
+                      </button>
                     </div>
                     
                     <div className="grid grid-cols-3 gap-4 mt-4">
