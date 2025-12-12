@@ -223,15 +223,17 @@ const EmailAnalyzer = () => {
   };
 
   // Calculate email metrics with flexible column naming
+  // NOTE: Uses BINARY counting - opened 12 times = 1 open, opened 0 times = 0 opens
+  // This prevents rate inflation from multiple opens/clicks/replies of the same email
   const calculateMetrics = (email) => {
     const opens = parseInt(email.opens || email.Opens || email.opened || email.Opened || 0);
     const clicks = parseInt(email.clicks || email.Clicks || email.clicked || email.Clicked || 0);
     const replies = parseInt(email.replies || email.Replies || email.replied || email.Replied || 0);
     
     return {
-      opened: opens > 0,
-      clicked: clicks > 0,
-      replied: replies > 0,
+      opened: opens > 0,   // Binary: true if opened at least once
+      clicked: clicks > 0, // Binary: true if clicked at least once
+      replied: replies > 0, // Binary: true if replied at least once
       opens,
       clicks,
       replies
@@ -275,12 +277,9 @@ const EmailAnalyzer = () => {
           name: template.type,
           description: template.description || 'Email template pattern',
           count: 0,
-          opens: 0,
-          clicks: 0,
-          replies: 0,
-          totalOpens: 0,
-          totalClicks: 0,
-          totalReplies: 0,
+          opens: 0,    // Binary: unique emails opened
+          clicks: 0,   // Binary: unique emails clicked
+          replies: 0,  // Binary: unique emails replied
           avgLength: 0,
           totalLength: 0,
           emails: []
@@ -292,13 +291,10 @@ const EmailAnalyzer = () => {
       group.totalLength += bodyField.length;
       group.avgLength = Math.round(group.totalLength / group.count);
       
+      // Binary counting - each email counts as 0 or 1 regardless of multiple opens/clicks/replies
       if (metrics.opened) group.opens++;
       if (metrics.clicked) group.clicks++;
       if (metrics.replied) group.replies++;
-      
-      group.totalOpens += metrics.opens;
-      group.totalClicks += metrics.clicks;
-      group.totalReplies += metrics.replies;
       
       group.emails.push({
         subject: subjectField,
@@ -333,12 +329,12 @@ const EmailAnalyzer = () => {
       group.replyRate = group.count > 0 ? ((group.replies / group.count) * 100).toFixed(1) : 0;
     });
 
-    // Overall metrics
+    // Overall metrics - using BINARY counting (each email counts once regardless of multiple opens/clicks/replies)
     const overall = {
       totalEmails: emails.length,
-      totalOpens: emails.filter(e => calculateMetrics(e).opened).length,
-      totalClicks: emails.filter(e => calculateMetrics(e).clicked).length,
-      totalReplies: emails.filter(e => calculateMetrics(e).replied).length
+      totalOpens: emails.filter(e => calculateMetrics(e).opened).length,    // Count of unique emails opened
+      totalClicks: emails.filter(e => calculateMetrics(e).clicked).length,  // Count of unique emails clicked
+      totalReplies: emails.filter(e => calculateMetrics(e).replied).length  // Count of unique emails replied
     };
     
     overall.openRate = ((overall.totalOpens / overall.totalEmails) * 100).toFixed(1);
@@ -514,7 +510,7 @@ const EmailAnalyzer = () => {
                   <h3 className="text-white/70 text-sm font-medium">Open Rate</h3>
                 </div>
                 <p className="text-3xl font-bold text-white">{analysis.overall.openRate}%</p>
-                <p className="text-sm text-white/60 mt-1">{analysis.overall.totalOpens} opens</p>
+                <p className="text-sm text-white/60 mt-1">{analysis.overall.totalOpens} emails opened</p>
               </div>
               
               <div className="bg-white/10 backdrop-blur-lg rounded-xl p-6 border border-white/20">
@@ -523,7 +519,7 @@ const EmailAnalyzer = () => {
                   <h3 className="text-white/70 text-sm font-medium">Click Rate</h3>
                 </div>
                 <p className="text-3xl font-bold text-white">{analysis.overall.clickRate}%</p>
-                <p className="text-sm text-white/60 mt-1">{analysis.overall.totalClicks} clicks</p>
+                <p className="text-sm text-white/60 mt-1">{analysis.overall.totalClicks} emails clicked</p>
               </div>
               
               <div className="bg-white/10 backdrop-blur-lg rounded-xl p-6 border border-white/20">
@@ -532,7 +528,7 @@ const EmailAnalyzer = () => {
                   <h3 className="text-white/70 text-sm font-medium">Reply Rate</h3>
                 </div>
                 <p className="text-3xl font-bold text-white">{analysis.overall.replyRate}%</p>
-                <p className="text-sm text-white/60 mt-1">{analysis.overall.totalReplies} replies</p>
+                <p className="text-sm text-white/60 mt-1">{analysis.overall.totalReplies} emails replied</p>
               </div>
             </div>
 
