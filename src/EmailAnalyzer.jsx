@@ -6,6 +6,9 @@ const EmailAnalyzer = () => {
   const [data, setData] = useState([]);
   const [loading, setLoading] = useState(false);
   const [analysis, setAnalysis] = useState(null);
+  const [apiKey, setApiKey] = useState('');
+  const [useAI, setUseAI] = useState(false);
+  const [aiProgress, setAiProgress] = useState({ current: 0, total: 0, status: '' });
 
   const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#14b8a6', '#f97316'];
 
@@ -222,6 +225,128 @@ const EmailAnalyzer = () => {
     return bestMatch;
   };
 
+  // AI-powered email analysis using GPT-4-mini
+  const analyzeEmailsWithAI = async (emails, apiKey) => {
+    const BATCH_SIZE = 20; // Process 20 emails at a time
+    const results = [];
+    
+    for (let i = 0; i < emails.length; i += BATCH_SIZE) {
+      const batch = emails.slice(i, i + BATCH_SIZE);
+      
+      setAiProgress({
+        current: i,
+        total: emails.length,
+        status: `Analyzing emails ${i + 1}-${Math.min(i + BATCH_SIZE, emails.length)} of ${emails.length}...`
+      });
+      
+      try {
+        const emailsForAnalysis = batch.map((email, idx) => ({
+          id: i + idx,
+          subject: email.subject || email.Subject || '',
+          body: (email.body || email.Body || '').substring(0, 2000) // Limit to 2000 chars
+        }));
+        
+        const response = await fetch('https://api.openai.com/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${apiKey}`
+          },
+          body: JSON.stringify({
+            model: 'gpt-4o-mini',
+            messages: [
+              {
+                role: 'system',
+                content: `You are an expert email marketing analyst. Your job is to:
+1. Categorize cold outreach emails by their approach/strategy
+2. Identify if an email is actually cold outreach (vs reply, internal email, etc.)
+
+Cold outreach means: First-time outbound sales emails to prospects who haven't engaged before.
+
+NOT cold outreach: Replies, follow-ups to replies, internal emails, newsletters, thank you emails, meeting confirmations.
+
+Return a JSON array with this exact structure:
+[
+  {
+    "id": 0,
+    "isColdOutreach": true/false,
+    "category": "Category Name",
+    "description": "Brief explanation of the approach"
+  }
+]
+
+Categories should be descriptive and specific, like:
+- "Research-Based Personalization" (mentions specific company info/news)
+- "Event-Based Meeting Request" (leveraging conference/event)
+- "Direct Meeting Ask" (straightforward calendar request)
+- "Problem-Solution Pitch" (identifies pain point + solution)
+- "Social Proof Heavy" (multiple client examples)
+- "Value Proposition Lead" (leads with benefits/ROI)
+- "Question Opener" (starts with engaging question)
+- "Follow-Up Sequence" (checking in on previous email)
+
+Be specific and create new categories as needed based on the actual approach used.`
+              },
+              {
+                role: 'user',
+                content: `Analyze these ${emailsForAnalysis.length} emails:\n\n${JSON.stringify(emailsForAnalysis, null, 2)}`
+              }
+            ],
+            temperature: 0.3,
+            max_tokens: 2000
+          })
+        });
+        
+        if (!response.ok) {
+          throw new Error(`OpenAI API error: ${response.statusText}`);
+        }
+        
+        const data = await response.json();
+        const content = data.choices[0].message.content;
+        
+        // Parse JSON response
+        const jsonMatch = content.match(/\[[\s\S]*\]/);
+        if (jsonMatch) {
+          const aiResults = JSON.parse(jsonMatch[0]);
+          results.push(...aiResults);
+        } else {
+          console.error('Could not parse AI response:', content);
+          // Fallback to regex for this batch
+          batch.forEach((email, idx) => {
+            const template = analyzeTemplate(email.body || email.Body || '');
+            results.push({
+              id: i + idx,
+              isColdOutreach: true, // Assume true if AI fails
+              category: template.type,
+              description: template.description
+            });
+          });
+        }
+        
+        // Rate limiting - wait 1 second between batches
+        if (i + BATCH_SIZE < emails.length) {
+          await new Promise(resolve => setTimeout(resolve, 1000));
+        }
+        
+      } catch (error) {
+        console.error('Error in AI analysis batch:', error);
+        // Fallback to regex for this batch
+        batch.forEach((email, idx) => {
+          const template = analyzeTemplate(email.body || email.Body || '');
+          results.push({
+            id: i + idx,
+            isColdOutreach: true,
+            category: template.type,
+            description: template.description
+          });
+        });
+      }
+    }
+    
+    setAiProgress({ current: emails.length, total: emails.length, status: 'Analysis complete!' });
+    return results;
+  };
+
   // Calculate email metrics with flexible column naming
   // NOTE: Uses BINARY counting - opened 12 times = 1 open, opened 0 times = 0 opens
   // This prevents rate inflation from multiple opens/clicks/replies of the same email
@@ -253,8 +378,8 @@ const EmailAnalyzer = () => {
     };
   };
 
-  // Main analysis function
-  const analyzeEmails = (emails) => {
+  // Main analysis function - can use AI results or fallback to regex
+  const analyzeEmails = (emails, aiResults = null) => {
     const templateGroups = {};
     const subjectAnalysis = {
       withQuestion: { opens: 0, total: 0 },
@@ -262,12 +387,37 @@ const EmailAnalyzer = () => {
       shortSubject: { opens: 0, total: 0 },
       longSubject: { opens: 0, total: 0 }
     };
+    
+    let filteredCount = 0;
 
-    emails.forEach(email => {
+    emails.forEach((email, idx) => {
       const bodyField = email.body || email.Body || email['Email Body'] || email.content || email.message || '';
       const subjectField = email.subject || email.Subject || email['Subject Line'] || email.subject_line || '';
       
-      const template = analyzeTemplate(bodyField);
+      // Use AI results if available
+      let template;
+      let isColdOutreach = true;
+      
+      if (aiResults && aiResults[idx]) {
+        const aiResult = aiResults[idx];
+        isColdOutreach = aiResult.isColdOutreach;
+        
+        // Skip non-cold-outreach emails
+        if (!isColdOutreach) {
+          filteredCount++;
+          return; // Skip this email
+        }
+        
+        template = {
+          type: aiResult.category,
+          description: aiResult.description,
+          score: 1
+        };
+      } else {
+        // Fallback to regex pattern matching
+        template = analyzeTemplate(bodyField);
+      }
+      
       const metrics = calculateMetrics(email);
       const subject = analyzeSubject(subjectField);
       
@@ -330,16 +480,19 @@ const EmailAnalyzer = () => {
     });
 
     // Overall metrics - using BINARY counting (each email counts once regardless of multiple opens/clicks/replies)
+    const coldOutreachEmails = emails.length - filteredCount;
     const overall = {
-      totalEmails: emails.length,
-      totalOpens: emails.filter(e => calculateMetrics(e).opened).length,    // Count of unique emails opened
-      totalClicks: emails.filter(e => calculateMetrics(e).clicked).length,  // Count of unique emails clicked
-      totalReplies: emails.filter(e => calculateMetrics(e).replied).length  // Count of unique emails replied
+      totalEmails: coldOutreachEmails,
+      totalOriginalEmails: emails.length,
+      filteredEmails: filteredCount,
+      totalOpens: Object.values(templateGroups).reduce((sum, g) => sum + g.opens, 0),
+      totalClicks: Object.values(templateGroups).reduce((sum, g) => sum + g.clicks, 0),
+      totalReplies: Object.values(templateGroups).reduce((sum, g) => sum + g.replies, 0)
     };
     
-    overall.openRate = ((overall.totalOpens / overall.totalEmails) * 100).toFixed(1);
-    overall.clickRate = ((overall.totalClicks / overall.totalEmails) * 100).toFixed(1);
-    overall.replyRate = ((overall.totalReplies / overall.totalEmails) * 100).toFixed(1);
+    overall.openRate = coldOutreachEmails > 0 ? ((overall.totalOpens / coldOutreachEmails) * 100).toFixed(1) : 0;
+    overall.clickRate = coldOutreachEmails > 0 ? ((overall.totalClicks / coldOutreachEmails) * 100).toFixed(1) : 0;
+    overall.replyRate = coldOutreachEmails > 0 ? ((overall.totalReplies / coldOutreachEmails) * 100).toFixed(1) : 0;
 
     return {
       templateGroups: Object.values(templateGroups).sort((a, b) => b.count - a.count),
@@ -355,7 +508,7 @@ const EmailAnalyzer = () => {
     setLoading(true);
     
     const reader = new FileReader();
-    reader.onload = (e) => {
+    reader.onload = async (e) => {
       try {
         const text = e.target.result;
         const parsed = parseCSV(text);
@@ -367,13 +520,28 @@ const EmailAnalyzer = () => {
         
         setData(parsed);
         
-        const results = analyzeEmails(parsed);
+        // Check if we should use AI
+        let aiResults = null;
+        if (useAI && apiKey) {
+          try {
+            console.log('🤖 Starting AI analysis with GPT-4-mini...');
+            aiResults = await analyzeEmailsWithAI(parsed, apiKey);
+            console.log('✅ AI analysis complete');
+          } catch (error) {
+            console.error('❌ AI analysis failed, falling back to regex:', error);
+            alert('AI analysis failed. Using pattern matching instead. Check console for details.');
+          }
+        }
+        
+        const results = analyzeEmails(parsed, aiResults);
         setAnalysis(results);
         setLoading(false);
+        setAiProgress({ current: 0, total: 0, status: '' });
       } catch (error) {
         console.error('Error parsing CSV:', error);
         alert('Error parsing CSV file. Please check the format.');
         setLoading(false);
+        setAiProgress({ current: 0, total: 0, status: '' });
       }
     };
     reader.readAsText(file);
@@ -488,6 +656,57 @@ const EmailAnalyzer = () => {
         {/* Upload Section */}
         {!analysis && (
           <div className="bg-white/10 backdrop-blur-lg rounded-2xl p-12 border border-white/20 shadow-2xl">
+            {/* AI Configuration */}
+            <div className="mb-8 p-6 bg-white/5 rounded-xl border border-white/10">
+              <div className="flex items-start gap-4 mb-4">
+                <div className="flex-1">
+                  <h3 className="text-lg font-bold text-white mb-2">🤖 AI-Powered Analysis (Optional)</h3>
+                  <p className="text-white/70 text-sm mb-4">
+                    Use GPT-4-mini for more accurate categorization and automatic filtering of non-cold-outreach emails.
+                    Your API key is only used in your browser and never sent to our servers.
+                  </p>
+                </div>
+                <label className="relative inline-flex items-center cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={useAI}
+                    onChange={(e) => setUseAI(e.target.checked)}
+                    className="sr-only peer"
+                  />
+                  <div className="w-11 h-6 bg-gray-700 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-800 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
+                </label>
+              </div>
+              
+              {useAI && (
+                <div className="space-y-3">
+                  <div>
+                    <label className="text-white/80 text-sm font-medium block mb-2">
+                      OpenAI API Key
+                    </label>
+                    <input
+                      type="password"
+                      value={apiKey}
+                      onChange={(e) => setApiKey(e.target.value)}
+                      placeholder="sk-proj-..."
+                      className="w-full px-4 py-2 bg-white/10 border border-white/20 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-blue-400"
+                    />
+                    <p className="text-white/50 text-xs mt-1">
+                      Get your API key from <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:underline">platform.openai.com/api-keys</a>
+                    </p>
+                  </div>
+                  
+                  <div className="bg-blue-500/10 border border-blue-500/20 rounded-lg p-3">
+                    <p className="text-blue-200 text-sm">
+                      <strong>Benefits:</strong> More accurate categorization, automatic filtering of replies/internal emails, context-aware analysis
+                    </p>
+                    <p className="text-blue-200/70 text-xs mt-2">
+                      <strong>Cost:</strong> ~$0.01-0.05 per 100 emails with GPT-4-mini
+                    </p>
+                  </div>
+                </div>
+              )}
+            </div>
+
             <div className="max-w-md mx-auto">
               <label className="flex flex-col items-center justify-center w-full h-64 border-2 border-dashed border-blue-400 rounded-xl cursor-pointer hover:bg-white/5 transition-all">
                 <div className="flex flex-col items-center justify-center pt-7">
@@ -498,21 +717,46 @@ const EmailAnalyzer = () => {
                   <p className="text-sm text-blue-200">
                     Include: recipient, subject, body, opens, clicks, replies
                   </p>
+                  {useAI && apiKey && (
+                    <p className="text-sm text-green-400 mt-2 flex items-center gap-2">
+                      <span className="inline-block w-2 h-2 bg-green-400 rounded-full"></span>
+                      AI analysis enabled
+                    </p>
+                  )}
                 </div>
                 <input
                   type="file"
                   accept=".csv"
                   onChange={handleFileUpload}
                   className="hidden"
-                  disabled={loading}
+                  disabled={loading || (useAI && !apiKey)}
                 />
               </label>
               {loading && (
                 <div className="mt-6 text-center">
                   <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-blue-400"></div>
-                  <p className="text-blue-200 mt-2">Processing emails...</p>
-                  <p className="text-blue-300 text-sm mt-1">Filtering empty rows and parsing templates</p>
+                  <p className="text-blue-200 mt-2">
+                    {aiProgress.status || 'Processing emails...'}
+                  </p>
+                  {aiProgress.total > 0 && (
+                    <>
+                      <p className="text-blue-300 text-sm mt-1">
+                        {aiProgress.current} / {aiProgress.total} emails analyzed
+                      </p>
+                      <div className="w-full bg-white/10 rounded-full h-2 mt-2">
+                        <div 
+                          className="bg-blue-500 h-2 rounded-full transition-all duration-300"
+                          style={{ width: `${(aiProgress.current / aiProgress.total) * 100}%` }}
+                        ></div>
+                      </div>
+                    </>
+                  )}
                 </div>
+              )}
+              {useAI && !apiKey && (
+                <p className="text-yellow-400 text-sm mt-4 text-center">
+                  ⚠️ Please enter your OpenAI API key to use AI analysis
+                </p>
               )}
             </div>
           </div>
@@ -546,10 +790,16 @@ const EmailAnalyzer = () => {
               <div className="bg-white/10 backdrop-blur-lg rounded-xl p-6 border border-white/20">
                 <div className="flex items-center gap-3 mb-2">
                   <Mail className="w-6 h-6 text-blue-400" />
-                  <h3 className="text-white/70 text-sm font-medium">Total Emails</h3>
+                  <h3 className="text-white/70 text-sm font-medium">Cold Outreach Emails</h3>
                 </div>
                 <p className="text-3xl font-bold text-white">{analysis.overall.totalEmails}</p>
-                <p className="text-xs text-green-400 mt-1">✓ Empty rows filtered</p>
+                {analysis.overall.filteredEmails > 0 ? (
+                  <p className="text-xs text-yellow-400 mt-1">
+                    ⚠️ {analysis.overall.filteredEmails} non-outreach filtered
+                  </p>
+                ) : (
+                  <p className="text-xs text-green-400 mt-1">✓ Empty rows filtered</p>
+                )}
               </div>
               
               <div className="bg-white/10 backdrop-blur-lg rounded-xl p-6 border border-white/20">
@@ -787,6 +1037,19 @@ const EmailAnalyzer = () => {
             {/* Key Insights */}
             <div className="bg-gradient-to-r from-blue-500/10 to-purple-500/10 backdrop-blur-lg rounded-xl p-8 border border-white/20">
               <h2 className="text-2xl font-bold text-white mb-6">📊 Key Insights</h2>
+              {analysis.overall.filteredEmails > 0 && (
+                <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-lg p-4 mb-4">
+                  <p className="text-yellow-200 font-semibold">
+                    🤖 AI Analysis Active
+                  </p>
+                  <p className="text-yellow-200/80 text-sm mt-1">
+                    Filtered out {analysis.overall.filteredEmails} non-cold-outreach emails (replies, internal emails, follow-ups, etc.)
+                  </p>
+                  <p className="text-yellow-200/80 text-sm">
+                    Showing only {analysis.overall.totalEmails} cold outreach emails for accurate campaign analysis
+                  </p>
+                </div>
+              )}
               <div className="space-y-4 text-white">
                 {analysis.templateGroups[0] && (
                   <p className="text-lg">
